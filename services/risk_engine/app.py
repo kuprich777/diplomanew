@@ -1,7 +1,8 @@
-import os
-import random
 import hashlib
 import json
+import os
+import random
+from pathlib import Path
 from statistics import mean
 
 import requests
@@ -9,8 +10,12 @@ from flask import Flask, jsonify, request
 
 from shared.risk_state import build_risk_state
 
+import yaml
+
 app = Flask(__name__)
 SERVICE_NAME = "risk_engine"
+SECTOR_INDEX = {"energy": 0, "water": 1, "transport": 2}
+SCENARIO_DIR = Path(__file__).resolve().parents[2] / "shared" / "scenarios"
 LAST_STATE = build_risk_state(
     service=SERVICE_NAME,
     level="low",
@@ -77,15 +82,79 @@ def _risk_value(state, weights):
     return sum(value * weight for value, weight in zip(state, weights)) / norm
 
 
-def _simulate_fq(matrix_a, x0, steps, rng=None, noise=0.0):
+def _validate_step_schema(step):
+    required = {"t", "sector", "action", "params"}
+    if not isinstance(step, dict):
+        raise ValueError("scenario step must be an object")
+    if set(step.keys()) != required:
+        raise ValueError("scenario step schema must be exactly: {t, sector, action, params}")
+
+
+def _step_to_control_vector(step, size):
+    _validate_step_schema(step)
+    action = step["action"]
+    sector = step["sector"]
+    params = step["params"]
+    vector = [0.0] * size
+
+    if not isinstance(params, dict):
+        raise ValueError("step params must be an object")
+
+    magnitude = float(params.get("magnitude", 1.0))
+
+    if action == "custom":
+        control = params.get("vector")
+        if not isinstance(control, list) or len(control) != size:
+            raise ValueError("custom action requires params.vector with same length as state vector")
+        return [float(value) for value in control]
+
+    if action == "cascade":
+        targets = params.get("targets")
+        if not isinstance(targets, dict):
+            raise ValueError("cascade action requires params.targets object")
+        for target, impact in targets.items():
+            if target not in SECTOR_INDEX:
+                raise ValueError(f"unknown target sector: {target}")
+            vector[SECTOR_INDEX[target]] += float(impact) * magnitude
+        return vector
+
+    action_impact = {
+        "failure": 0.35,
+        "load_spike": 0.25,
+        "degradation": 0.20,
+        "recovery": -0.20,
+        "stress": 0.15,
+    }
+    if action not in action_impact:
+        raise ValueError(f"unknown action: {action}")
+    if sector not in SECTOR_INDEX:
+        raise ValueError(f"unknown sector: {sector}")
+
+    vector[SECTOR_INDEX[sector]] += action_impact[action] * magnitude
+    return vector
+
+
+def _scenario_controls(steps, horizon, size):
+    controls = [[0.0] * size for _ in range(horizon)]
+    for step in steps:
+        vector = _step_to_control_vector(step, size)
+        t = int(step["t"])
+        if t < 0 or t >= horizon:
+            raise ValueError(f"step time t={t} is out of horizon [0, {horizon - 1}]")
+        controls[t] = [prev + cur for prev, cur in zip(controls[t], vector)]
+    return controls
+
+
+def _simulate_fq(matrix_a, x0, steps, controls=None, rng=None, noise=0.0):
     state = list(x0)
     trajectory = [state]
-    for _ in range(steps):
-        if rng is None:
-            u_t = [0.0 for _ in state]
-        else:
-            u_t = [rng.uniform(-noise, noise) for _ in state]
+    controls = controls or [[0.0 for _ in state] for _ in range(steps)]
+
+    for tick in range(steps):
+        base_control = controls[tick] if tick < len(controls) else [0.0 for _ in state]
+        stochastic = [rng.uniform(-noise, noise) for _ in state] if rng is not None else [0.0 for _ in state]
         influence = _matvec(matrix_a, state)
+        u_t = [ctrl + rnd for ctrl, rnd in zip(base_control, stochastic)]
         state = [_clip(cur + control + infl) for cur, control, infl in zip(state, u_t, influence)]
         trajectory.append(state)
     return trajectory
@@ -108,8 +177,8 @@ def _average_risk(trajectory, weights):
     return mean(_risk_value(state, weights) for state in trajectory)
 
 
-def _run_once(matrix_a, x0, theta, steps, weights, rng=None, noise=0.0):
-    fq = _simulate_fq(matrix_a=matrix_a, x0=x0, steps=steps, rng=rng, noise=noise)
+def _run_once(matrix_a, x0, theta, steps, weights, controls=None, rng=None, noise=0.0):
+    fq = _simulate_fq(matrix_a=matrix_a, x0=x0, steps=steps, controls=controls, rng=rng, noise=noise)
     fcl = _simulate_fcl(matrix_a=matrix_a, x0=x0, theta=theta, steps=steps)
     return {
         "fq": fq,
@@ -119,9 +188,71 @@ def _run_once(matrix_a, x0, theta, steps, weights, rng=None, noise=0.0):
     }
 
 
+def _load_scenario_file(path):
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+    elif suffix in {".yaml", ".yml"}:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    else:
+        raise ValueError(f"unsupported scenario format: {path.name}")
+
+    if not isinstance(data, dict):
+        raise ValueError("scenario file must contain an object")
+    scenario_id = data.get("id") or path.stem
+    steps = data.get("steps", [])
+    if not isinstance(steps, list):
+        raise ValueError("scenario steps must be a list")
+    for step in steps:
+        _validate_step_schema(step)
+
+    return {
+        "id": scenario_id,
+        "name": data.get("name", scenario_id),
+        "description": data.get("description", ""),
+        "steps": steps,
+        "source": str(path.relative_to(Path(__file__).resolve().parents[2])),
+    }
+
+
+def _load_scenarios():
+    if not SCENARIO_DIR.exists():
+        return []
+
+    items = []
+    for path in sorted(SCENARIO_DIR.iterdir()):
+        if path.suffix.lower() not in {".json", ".yaml", ".yml"}:
+            continue
+        items.append(_load_scenario_file(path))
+    return items
+
+
+def _find_scenario(scenario_id):
+    for scenario in _load_scenarios():
+        if scenario["id"] == scenario_id:
+            return scenario
+    raise ValueError(f"scenario not found: {scenario_id}")
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "service": SERVICE_NAME})
+
+
+@app.get("/api/v1/risk/scenarios")
+def list_scenarios():
+    scenarios = _load_scenarios()
+    response = [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "description": item["description"],
+            "step_count": len(item["steps"]),
+            "source": item["source"],
+        }
+        for item in scenarios
+    ]
+    return jsonify(response)
 
 
 @app.post("/api/v1/risk/evaluate")
@@ -182,6 +313,7 @@ def run_scenario():
     steps = int(payload["delta"])
     weights = payload["weights"]
     seed = payload.get("seed")
+    scenario_steps = payload.get("scenario_steps")
 
     if mode not in {"q", "cl", "monte_carlo_q", "monte_carlo_cl"}:
         return jsonify({"error": "mode must be one of: q, cl, monte_carlo_q, monte_carlo_cl"}), 400
@@ -206,6 +338,14 @@ def run_scenario():
     except (TypeError, ValueError) as exc:
         return jsonify({"error": f"Invalid weights: {exc}"}), 400
 
+    if scenario_steps is None:
+        scenario_steps = []
+
+    try:
+        controls = _scenario_controls(scenario_steps, horizon=steps, size=len(x0))
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": f"Invalid scenario_steps: {exc}"}), 400
+
     a_version = _matrix_version(matrix_a)
     runs = int(payload.get("runs", 100))
     noise = float(payload.get("noise", 0.05))
@@ -215,7 +355,7 @@ def run_scenario():
             seed = int(os.getenv("RISK_SEED", "42"))
         rng = random.Random(int(seed))
         simulations = [
-            _run_once(matrix_a, x0, theta, steps, weights, rng=rng, noise=noise)
+            _run_once(matrix_a, x0, theta, steps, weights, controls=controls, rng=rng, noise=noise)
             for _ in range(runs)
         ]
         iq = mean(sim["Iq"] for sim in simulations)
@@ -223,7 +363,7 @@ def run_scenario():
         chosen_key = "fq" if mode.endswith("_q") else "fcl"
         trajectory = simulations[-1][chosen_key]
     else:
-        result = _run_once(matrix_a, x0, theta, steps, weights)
+        result = _run_once(matrix_a, x0, theta, steps, weights, controls=controls)
         iq = result["Iq"]
         icl = result["Icl"]
         trajectory = result["fq" if mode == "q" else "fcl"]
@@ -238,6 +378,7 @@ def run_scenario():
             "mode": mode,
             "matrix_A_version": a_version,
             "seed": seed,
+            "controls": controls,
             "trajectory": trajectory,
             "R0": r0,
             "RT": rt,
@@ -248,6 +389,27 @@ def run_scenario():
     )
 
 
+@app.post("/api/v1/risk/scenarios/<scenario_id>/monte-carlo")
+def run_scenario_batch(scenario_id):
+    payload = request.get_json(silent=True) or {}
+    try:
+        scenario = _find_scenario(scenario_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    payload.update(
+        {
+            "scenario_id": scenario_id,
+            "run_id": payload.get("run_id", f"batch-{scenario_id}"),
+            "mode": payload.get("mode", "monte_carlo_q"),
+            "scenario_steps": scenario["steps"],
+        }
+    )
+
+    with app.test_request_context("/api/v1/risk/run", method="POST", json=payload):
+        return run_scenario()
+
+
 @app.get("/api/v1/risk/state")
 def state():
     return jsonify(LAST_STATE)
@@ -256,11 +418,6 @@ def state():
 @app.errorhandler(requests.RequestException)
 def handle_upstream_error(err):
     return jsonify({"error": str(err), "service": SERVICE_NAME}), 502
-
-
-@app.errorhandler(Exception)
-def handle_generic(err):
-    return jsonify({"error": str(err), "service": SERVICE_NAME}), 500
 
 
 if __name__ == "__main__":

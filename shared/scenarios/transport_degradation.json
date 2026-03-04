@@ -1,0 +1,10 @@
+{
+  "id": "transport_degradation",
+  "name": "Деградация транспорта",
+  "description": "Снижение пропускной способности и рост инцидентов в транспортной сети.",
+  "steps": [
+    {"t": 0, "sector": "transport", "action": "degradation", "params": {"magnitude": 1.0}},
+    {"t": 2, "sector": "transport", "action": "degradation", "params": {"magnitude": 0.8}},
+    {"t": 4, "sector": "transport", "action": "recovery", "params": {"magnitude": 0.3}}
+  ]
+}

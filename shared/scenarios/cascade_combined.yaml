@@ -1,0 +1,27 @@
+id: cascade_combined
+name: Комбинированный каскадный сценарий
+description: Стартовый отказ в энергетике распространяется на воду и транспорт.
+steps:
+  - t: 0
+    sector: energy
+    action: failure
+    params:
+      magnitude: 1.0
+  - t: 1
+    sector: energy
+    action: cascade
+    params:
+      magnitude: 1.0
+      targets:
+        water: 0.20
+        transport: 0.15
+  - t: 2
+    sector: transport
+    action: degradation
+    params:
+      magnitude: 0.9
+  - t: 3
+    sector: water
+    action: load_spike
+    params:
+      magnitude: 0.6
