@@ -36,6 +36,11 @@
   - Ходит в `energy`, `water`, `transport` за входными сигналами.
 - `GET /api/v1/risk/state`
   - Возвращает последнее рассчитанное состояние риска.
+- `POST /api/v1/risk/run`
+  - Запускает сценарный прогон на основе `Fq` (`x[t+1] = clip(x[t] + u[t] + A @ x[t])`) и `Fcl` (бинаризация по `theta` + rule-based распространение).
+  - Вход: `scenario_id`, `run_id`, `mode`, `A`, `x0`, `theta`, `delta`, `weights`, опционально `seed`, `runs`, `noise`.
+  - Выход: `trajectory`, `R0`, `RT`, `delta_R`, `Iq`, `Icl`.
+  - Валидации: диапазоны `x0` и `A` в `[0,1]`, а также версионирование матрицы `A` через SHA-256.
 
 ### metrics_aggregator
 - `GET /api/v1/metrics/summary`
