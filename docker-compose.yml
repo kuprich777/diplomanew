@@ -1,0 +1,75 @@
+services:
+  energy:
+    build:
+      context: .
+      dockerfile: services/energy/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PORT: ${ENERGY_PORT}
+      ENERGY_BASE_DEMAND: ${ENERGY_BASE_DEMAND}
+      ENERGY_BASE_SUPPLY: ${ENERGY_BASE_SUPPLY}
+    ports:
+      - "${ENERGY_PORT}:${ENERGY_PORT}"
+
+  water:
+    build:
+      context: .
+      dockerfile: services/water/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PORT: ${WATER_PORT}
+      WATER_QUALITY_INDEX: ${WATER_QUALITY_INDEX}
+      WATER_RESERVOIR_LEVEL: ${WATER_RESERVOIR_LEVEL}
+    ports:
+      - "${WATER_PORT}:${WATER_PORT}"
+
+  transport:
+    build:
+      context: .
+      dockerfile: services/transport/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PORT: ${TRANSPORT_PORT}
+      TRANSPORT_LOAD: ${TRANSPORT_LOAD}
+      TRANSPORT_INCIDENTS: ${TRANSPORT_INCIDENTS}
+    ports:
+      - "${TRANSPORT_PORT}:${TRANSPORT_PORT}"
+
+  risk_engine:
+    build:
+      context: .
+      dockerfile: services/risk_engine/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - energy
+      - water
+      - transport
+    environment:
+      PORT: ${RISK_ENGINE_PORT}
+      REQUEST_TIMEOUT_SEC: ${REQUEST_TIMEOUT_SEC}
+      MONTE_CARLO_RUNS: ${MONTE_CARLO_RUNS}
+      RISK_SEED: ${RISK_SEED}
+      ENERGY_URL: http://energy:${ENERGY_PORT}
+      WATER_URL: http://water:${WATER_PORT}
+      TRANSPORT_URL: http://transport:${TRANSPORT_PORT}
+    ports:
+      - "${RISK_ENGINE_PORT}:${RISK_ENGINE_PORT}"
+
+  metrics_aggregator:
+    build:
+      context: .
+      dockerfile: services/metrics_aggregator/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - risk_engine
+    environment:
+      PORT: ${METRICS_AGGREGATOR_PORT}
+      REQUEST_TIMEOUT_SEC: ${REQUEST_TIMEOUT_SEC}
+      RISK_ENGINE_URL: http://risk_engine:${RISK_ENGINE_PORT}
+    ports:
+      - "${METRICS_AGGREGATOR_PORT}:${METRICS_AGGREGATOR_PORT}"

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RiskStateMessage",
+  "type": "object",
+  "required": ["schema_version", "timestamp_utc", "service", "risk", "metadata"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "timestamp_utc": {"type": "string", "format": "date-time"},
+    "service": {"type": "string"},
+    "risk": {
+      "type": "object",
+      "required": ["level", "score", "summary", "signals"],
+      "properties": {
+        "level": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "summary": {"type": "string"},
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "value", "weight"],
+            "properties": {
+              "name": {"type": "string"},
+              "value": {"type": "number"},
+              "weight": {"type": "number"}
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}
