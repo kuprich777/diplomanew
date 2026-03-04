@@ -1,0 +1,10 @@
+{
+  "id": "energy_failure",
+  "name": "Отказ в энергетике",
+  "description": "Внезапное падение надёжности энергосистемы и частичное восстановление.",
+  "steps": [
+    {"t": 0, "sector": "energy", "action": "failure", "params": {"magnitude": 1.0}},
+    {"t": 1, "sector": "energy", "action": "failure", "params": {"magnitude": 0.8}},
+    {"t": 3, "sector": "energy", "action": "recovery", "params": {"magnitude": 0.6}}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "water_load_growth",
+  "name": "Рост нагрузки в водоснабжении",
+  "description": "Нарастание нагрузки на водоснабжение на фоне пикового потребления.",
+  "steps": [
+    {"t": 0, "sector": "water", "action": "load_spike", "params": {"magnitude": 0.7}},
+    {"t": 1, "sector": "water", "action": "stress", "params": {"magnitude": 1.0}},
+    {"t": 2, "sector": "water", "action": "load_spike", "params": {"magnitude": 0.9}}
+  ]
+}
